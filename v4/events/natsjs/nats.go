@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 	"github.com/pkg/errors"
 
 	"go-micro.dev/v4/events"
@@ -41,6 +43,12 @@ func NewStream(opts ...Option) (events.Stream, error) {
 	return s, nil
 }
 
+type store struct {
+	opts             Options
+	natsJetStreamCtx nats.JetStreamContext
+	topicSubs        map[string]*nats.Subscription
+}
+
 type stream struct {
 	opts             Options
 	natsJetStreamCtx nats.JetStreamContext
@@ -52,6 +60,31 @@ func connectToNatsJetStream(options Options) (nats.JetStreamContext, error) {
 		nopts.Secure = true
 		nopts.TLSConfig = options.TLSConfig
 	}
+	if options.NkeyConfig != "" {
+		kp, err := nkeys.FromSeed([]byte(options.NkeyConfig))
+		if err != nil {
+			return nil, err
+		}
+		pubKey, err := kp.PublicKey()
+		if err != nil {
+			return nil, err
+		}
+		nopts.Nkey = pubKey
+
+		nopts.SignatureCB = func(nonce []byte) ([]byte, error) {
+			kp, err := nkeys.FromSeed([]byte(options.NkeyConfig))
+			if err != nil {
+				return nil, err
+			}
+			sig, err := kp.Sign(nonce)
+			if err != nil {
+				return nil, err
+			}
+			return sig, nil
+		}
+
+	}
+
 	if len(options.Address) > 0 {
 		nopts.Servers = strings.Split(options.Address, ",")
 	}
@@ -74,6 +107,46 @@ func (s *stream) Publish(topic string, msg interface{}, opts ...events.PublishOp
 	// validate the topic
 	if len(topic) == 0 {
 		return events.ErrMissingTopic
+	}
+
+	// validate the topic
+	splits := strings.Split(topic, ".")
+	var streamSubject string
+	if len(splits) >= 2 {
+		if !IsUpper(splits[0]) {
+			return fmt.Errorf("name must be uppercase")
+		}
+
+		streamName := splits[0]
+		streamSubject = strings.Replace(topic, streamName+".", "", 1)
+
+		// ensure that a stream exists for that topic
+		streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
+		if err != nil {
+			cfg := &nats.StreamConfig{
+				Name:     streamName,
+				Subjects: []string{streamSubject},
+			}
+
+			_, err := s.natsJetStreamCtx.AddStream(cfg)
+			if err != nil {
+				return errors.Wrap(err, "Stream did not exist and adding a stream failed")
+			}
+
+		} else if !stringContains(streamInfo.Config.Subjects, streamSubject) {
+			olderSubjects := streamInfo.Config.Subjects
+			newSubjects := append(olderSubjects, streamSubject)
+			cfg := &nats.StreamConfig{
+				Name:     streamName,
+				Subjects: newSubjects,
+			}
+			_, err := s.natsJetStreamCtx.UpdateStream(cfg)
+			if err != nil {
+				return errors.Wrap(err, "Stream add subject failed")
+			}
+
+		}
+
 	}
 
 	// parse the options
@@ -110,10 +183,17 @@ func (s *stream) Publish(topic string, msg interface{}, opts ...events.PublishOp
 	if err != nil {
 		return errors.Wrap(err, "Error encoding event")
 	}
+	if len(splits) >= 2 {
+		// publish the event to the topic's channel
+		if _, err := s.natsJetStreamCtx.PublishAsync(streamSubject, bytes); err != nil {
+			return errors.Wrap(err, "Error publishing message to topic")
+		}
+	} else {
+		// publish the event to the topic's channel
+		if _, err := s.natsJetStreamCtx.PublishAsync(event.Topic, bytes); err != nil {
+			return errors.Wrap(err, "Error publishing message to topic")
+		}
 
-	// publish the event to the topic's channel
-	if _, err := s.natsJetStreamCtx.PublishAsync(event.Topic, bytes); err != nil {
-		return errors.Wrap(err, "Error publishing message to topic")
 	}
 
 	return nil
@@ -217,4 +297,185 @@ func (s *stream) Consume(topic string, opts ...events.ConsumeOption) (<-chan eve
 	}
 
 	return c, nil
+}
+
+func NewStore(opts ...Option) (events.Store, error) {
+	// parse the options
+	options := Options{
+		ClientID:  uuid.New().String(),
+		ClusterID: defaultClusterID,
+		Logger:    logger.DefaultLogger,
+	}
+	for _, o := range opts {
+		o(&options)
+	}
+
+	s := &store{opts: options}
+	natsJetStreamCtx, err := connectToNatsJetStream(options)
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to nats cluster %v: %v", options.ClusterID, err)
+	}
+	s.natsJetStreamCtx = natsJetStreamCtx
+
+	s.topicSubs = make(map[string]*nats.Subscription)
+
+	return s, nil
+}
+
+func IsUpper(s string) bool {
+	for _, r := range s {
+		if !unicode.IsUpper(r) && unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringContains(s []string, e string) bool {
+	for _, r := range s {
+		if r == e {
+			return true
+		}
+	}
+	return false
+}
+
+// pull base
+func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, error) {
+	// validate the topic
+
+	splits := strings.Split(topic, ".")
+	if !IsUpper(splits[0]) {
+		return nil, fmt.Errorf("name must be uppercase")
+	}
+
+	streamName := splits[0]
+	streamSubject := strings.Replace(topic, streamName+".", "", 1)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	if len(topic) == 0 {
+		return nil, events.ErrMissingTopic
+	}
+
+	options := &events.ReadOptions{
+		Limit: 1,
+	}
+	for _, o := range opts {
+		o(options)
+	}
+
+	// nats.Durable()
+	streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
+	if err != nil {
+		cfg := &nats.StreamConfig{
+			Name:     streamName,
+			Subjects: []string{streamSubject},
+		}
+
+		_, err := s.natsJetStreamCtx.AddStream(cfg)
+		if err != nil {
+			return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
+		}
+
+	} else if !stringContains(streamInfo.Config.Subjects, streamSubject) {
+		olderSubjects := streamInfo.Config.Subjects
+		newSubjects := append(olderSubjects, streamSubject)
+		cfg := &nats.StreamConfig{
+			Name:     streamName,
+			Subjects: newSubjects,
+		}
+		_, err := s.natsJetStreamCtx.UpdateStream(cfg)
+		if err != nil {
+			return nil, errors.Wrap(err, "Stream add subject failed")
+		}
+
+	}
+
+	log := s.opts.Logger
+
+	subOpts := []nats.SubOpt{}
+
+	autoAck, ok := options.Context.Value(autoAckReadOptionsContextKey{}).(bool)
+	if ok {
+		if autoAck {
+			subOpts = append(subOpts, nats.AckNone())
+		} else {
+			subOpts = append(subOpts, nats.AckExplicit())
+
+		}
+	} else {
+		subOpts = append(subOpts, nats.AckNone())
+	}
+
+	ackWait, ok := options.Context.Value(ackWaitReadOptionsContextKey{}).(time.Duration)
+	if ok {
+		if ackWait > 0 {
+			subOpts = append(subOpts, nats.AckWait(ackWait))
+
+		}
+
+	}
+
+	if _, ok := s.topicSubs[topic]; !ok {
+		groupName, ok := options.Context.Value(groupReadOptionsContextKey{}).(string)
+		if !ok {
+			// TODO :: test it to work or not.
+			sub, err := s.natsJetStreamCtx.PullSubscribe(streamSubject, "", subOpts...)
+			if err != nil {
+				log.Logf(logger.ErrorLevel, "Error pull subscribe: %v", err)
+				return nil, err
+			}
+			s.topicSubs[topic] = sub
+		} else {
+			uniqueGroupName := groupName + strings.Replace(topic, ".", "", -1)
+			sub, err := s.natsJetStreamCtx.PullSubscribe(streamSubject, uniqueGroupName, subOpts...)
+			if err != nil {
+				log.Logf(logger.ErrorLevel, "Error pull subscribe: %v", err)
+				return nil, err
+			}
+			s.topicSubs[topic] = sub
+		}
+
+	}
+
+	msgs, err := s.topicSubs[topic].Fetch(int(options.Limit), nats.MaxWait(3*time.Second))
+
+	if err != nil {
+		log.Logf(logger.ErrorLevel, "Error fetching messages: %v", err)
+		return nil, err
+	}
+	var evts []*events.Event
+	for _, m := range msgs {
+		// decode the message
+		var evt events.Event
+		if err := json.Unmarshal(m.Data, &evt); err != nil {
+			logger.Logf(logger.ErrorLevel, "Error decoding message: %v", err)
+			// not acknowledging the message is the way to indicate an error occurred
+			return nil, err
+		}
+		if !autoAck {
+			// set up the ack funcs
+			evt.SetAckFunc(func() error {
+				return m.Ack()
+			})
+			evt.SetNackFunc(func() error {
+				return m.Nak()
+			})
+		}
+		evts = append(evts, &evt)
+
+		if autoAck {
+			m.Ack(nats.Context(ctx))
+		}
+	}
+
+	return evts, nil
+}
+
+// need to think about it that do we need it or not
+// its same as publish
+func (s *store) Write(event *events.Event, opts ...events.WriteOption) error {
+	return nil
 }

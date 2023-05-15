@@ -98,6 +98,22 @@ func connectToNatsJetStream(options Options) (nats.JetStreamContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error while obtaining JetStream context: %v", err)
 	}
+	for streamName, policy := range options.RetentionPolicy {
+		_, err := js.StreamInfo(string(streamName))
+		if err != nil {
+			cfg := &nats.StreamConfig{
+				Name: string(streamName),
+				// Subjects:  []string{},
+				Retention: policy,
+			}
+
+			_, err := js.AddStream(cfg)
+			if err != nil {
+				return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
+			}
+
+		}
+	}
 
 	return js, nil
 }
@@ -124,8 +140,9 @@ func (s *stream) Publish(topic string, msg interface{}, opts ...events.PublishOp
 		streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
 		if err != nil {
 			cfg := &nats.StreamConfig{
-				Name:     streamName,
-				Subjects: []string{streamSubject},
+				Name:      streamName,
+				Subjects:  []string{streamSubject},
+				Retention: nats.WorkQueuePolicy, // default retention policy
 			}
 
 			_, err := s.natsJetStreamCtx.AddStream(cfg)
@@ -136,11 +153,9 @@ func (s *stream) Publish(topic string, msg interface{}, opts ...events.PublishOp
 		} else if !stringContains(streamInfo.Config.Subjects, streamSubject) {
 			olderSubjects := streamInfo.Config.Subjects
 			newSubjects := append(olderSubjects, streamSubject)
-			cfg := &nats.StreamConfig{
-				Name:     streamName,
-				Subjects: newSubjects,
-			}
-			_, err := s.natsJetStreamCtx.UpdateStream(cfg)
+			streamInfo.Config.Subjects = newSubjects
+
+			_, err := s.natsJetStreamCtx.UpdateStream(&streamInfo.Config)
 			if err != nil {
 				return errors.Wrap(err, "Stream add subject failed")
 			}
@@ -252,17 +267,57 @@ func (s *stream) Consume(topic string, opts ...events.ConsumeOption) (<-chan eve
 
 	}
 
-	// ensure that a stream exists for that topic
-	_, err := s.natsJetStreamCtx.StreamInfo(topic)
-	if err != nil {
-		cfg := &nats.StreamConfig{
-			Name: topic,
+	// validate the topic
+	splits := strings.Split(topic, ".")
+	var streamSubject string
+	if len(splits) >= 2 {
+		if !IsUpper(splits[0]) {
+			return nil, fmt.Errorf("name must be uppercase")
 		}
 
-		_, err = s.natsJetStreamCtx.AddStream(cfg)
+		streamName := splits[0]
+		streamSubject = strings.Replace(topic, streamName+".", "", 1)
+
+		// ensure that a stream exists for that topic
+		streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
 		if err != nil {
-			return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
+			cfg := &nats.StreamConfig{
+				Name:      streamName,
+				Subjects:  []string{streamSubject},
+				Retention: nats.WorkQueuePolicy, // default retention
+			}
+
+			_, err := s.natsJetStreamCtx.AddStream(cfg)
+			if err != nil {
+				return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
+			}
+
+		} else if !stringContains(streamInfo.Config.Subjects, streamSubject) {
+			olderSubjects := streamInfo.Config.Subjects
+			newSubjects := append(olderSubjects, streamSubject)
+			streamInfo.Config.Subjects = newSubjects
+
+			_, err := s.natsJetStreamCtx.UpdateStream(&streamInfo.Config)
+			if err != nil {
+				return nil, errors.Wrap(err, "Stream add subject failed")
+			}
+
 		}
+	} else {
+		// ensure that a stream exists for that topic
+		_, err := s.natsJetStreamCtx.StreamInfo(topic)
+		if err != nil {
+			cfg := &nats.StreamConfig{
+				Name:      topic,
+				Retention: nats.WorkQueuePolicy, // default retention
+			}
+
+			_, err = s.natsJetStreamCtx.AddStream(cfg)
+			if err != nil {
+				return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
+			}
+		}
+
 	}
 
 	// setup the options
@@ -289,12 +344,20 @@ func (s *stream) Consume(topic string, opts ...events.ConsumeOption) (<-chan eve
 	if options.AckWait > 0 {
 		subOpts = append(subOpts, nats.AckWait(options.AckWait))
 	}
+	if len(splits) >= 2 {
+		uniqueGroupName := options.Group + strings.Replace(topic, ".", "", -1)
 
-	// connect the subscriber
-	_, err = s.natsJetStreamCtx.QueueSubscribe(topic, options.Group, handleMsg, subOpts...)
-	if err != nil {
-		return nil, errors.Wrap(err, "Error subscribing to topic")
+		_, err := s.natsJetStreamCtx.QueueSubscribe(streamSubject, uniqueGroupName, handleMsg, subOpts...)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error subscribing to topic")
+		}
+	} else {
+		_, err := s.natsJetStreamCtx.QueueSubscribe(topic, options.Group, handleMsg, subOpts...)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error subscribing to topic")
+		}
 	}
+	// connect the subscriber
 
 	return c, nil
 }
@@ -343,22 +406,9 @@ func stringContains(s []string, e string) bool {
 // pull base
 func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, error) {
 	// validate the topic
-
-	splits := strings.Split(topic, ".")
-	if !IsUpper(splits[0]) {
-		return nil, fmt.Errorf("name must be uppercase")
-	}
-
-	streamName := splits[0]
-	streamSubject := strings.Replace(topic, streamName+".", "", 1)
-
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
-
 	if len(topic) == 0 {
 		return nil, events.ErrMissingTopic
 	}
-
 	options := &events.ReadOptions{
 		Limit: 1,
 	}
@@ -366,29 +416,57 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 		o(options)
 	}
 
-	// nats.Durable()
-	streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
-	if err != nil {
-		cfg := &nats.StreamConfig{
-			Name:     streamName,
-			Subjects: []string{streamSubject},
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	splits := strings.Split(topic, ".")
+	var streamSubject string
+
+	if len(splits) >= 2 {
+		if !IsUpper(splits[0]) {
+			return nil, fmt.Errorf("name must be uppercase")
 		}
 
-		_, err := s.natsJetStreamCtx.AddStream(cfg)
-		if err != nil {
-			return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
-		}
+		streamName := splits[0]
+		streamSubject := strings.Replace(topic, streamName+".", "", 1)
 
-	} else if !stringContains(streamInfo.Config.Subjects, streamSubject) {
-		olderSubjects := streamInfo.Config.Subjects
-		newSubjects := append(olderSubjects, streamSubject)
-		cfg := &nats.StreamConfig{
-			Name:     streamName,
-			Subjects: newSubjects,
-		}
-		_, err := s.natsJetStreamCtx.UpdateStream(cfg)
+		streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
 		if err != nil {
-			return nil, errors.Wrap(err, "Stream add subject failed")
+			cfg := &nats.StreamConfig{
+				Name:      streamName,
+				Subjects:  []string{streamSubject},
+				Retention: nats.WorkQueuePolicy, // default retention
+			}
+
+			_, err := s.natsJetStreamCtx.AddStream(cfg)
+			if err != nil {
+				return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
+			}
+
+		} else if !stringContains(streamInfo.Config.Subjects, streamSubject) {
+			olderSubjects := streamInfo.Config.Subjects
+			newSubjects := append(olderSubjects, streamSubject)
+			streamInfo.Config.Subjects = newSubjects
+
+			_, err := s.natsJetStreamCtx.UpdateStream(&streamInfo.Config)
+			if err != nil {
+				return nil, errors.Wrap(err, "Stream add subject failed")
+			}
+
+		}
+	} else {
+		// ensure that a stream exists for that topic
+		_, err := s.natsJetStreamCtx.StreamInfo(topic)
+		if err != nil {
+			cfg := &nats.StreamConfig{
+				Name:      topic,
+				Retention: nats.WorkQueuePolicy, // default retention
+			}
+
+			_, err = s.natsJetStreamCtx.AddStream(cfg)
+			if err != nil {
+				return nil, errors.Wrap(err, "Stream did not exist and adding a stream failed")
+			}
 		}
 
 	}
@@ -419,18 +497,31 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 	}
 
 	if _, ok := s.topicSubs[topic]; !ok {
-		groupName, ok := options.Context.Value(groupReadOptionsContextKey{}).(string)
-		if !ok {
-			// TODO :: test it to work or not.
-			sub, err := s.natsJetStreamCtx.PullSubscribe(streamSubject, "", subOpts...)
-			if err != nil {
-				log.Logf(logger.ErrorLevel, "Error pull subscribe: %v", err)
-				return nil, err
+		if len(splits) >= 2 {
+
+			groupName, ok := options.Context.Value(groupReadOptionsContextKey{}).(string)
+			if !ok {
+				// TODO :: test it to work or not.
+				sub, err := s.natsJetStreamCtx.PullSubscribe(streamSubject, "", subOpts...)
+				if err != nil {
+					log.Logf(logger.ErrorLevel, "Error pull subscribe: %v", err)
+					return nil, err
+				}
+				s.topicSubs[topic] = sub
+			} else {
+				uniqueGroupName := groupName + strings.Replace(topic, ".", "", -1)
+				sub, err := s.natsJetStreamCtx.PullSubscribe(streamSubject, uniqueGroupName, subOpts...)
+				if err != nil {
+					log.Logf(logger.ErrorLevel, "Error pull subscribe: %v", err)
+					return nil, err
+				}
+				s.topicSubs[topic] = sub
 			}
-			s.topicSubs[topic] = sub
 		} else {
-			uniqueGroupName := groupName + strings.Replace(topic, ".", "", -1)
-			sub, err := s.natsJetStreamCtx.PullSubscribe(streamSubject, uniqueGroupName, subOpts...)
+			// it this scenario I think we should pull all the stream.
+			// maybe we should prohibit this.
+			subOpts = append(subOpts, nats.BindStream(topic))
+			sub, err := s.natsJetStreamCtx.PullSubscribe("", "", subOpts...)
 			if err != nil {
 				log.Logf(logger.ErrorLevel, "Error pull subscribe: %v", err)
 				return nil, err

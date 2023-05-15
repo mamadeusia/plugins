@@ -9,7 +9,7 @@ require (
 	github.com/nats-io/nkeys v0.3.0
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.1
-	go-micro.dev/v4 v4.10.0
+	go-micro.dev/v4 v4.10.3-0.20230506193924-80203030175f
 )
 
 require (
@@ -38,5 +38,3 @@ require (
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace go-micro.dev/v4 v4.10.0 => github.com/mamadeusia/go-micro/v4 v4.0.0-20230501123519-6f4e278a9ecb

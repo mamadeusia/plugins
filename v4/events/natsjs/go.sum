@@ -1231,8 +1231,6 @@ github.com/mailru/easyjson v0.0.0-20190614124828-94de47d64c63/go.mod h1:C1wdFJiN
 github.com/mailru/easyjson v0.0.0-20190626092158-b2ccc519800e/go.mod h1:C1wdFJiN94OJF2b5HbByQZoLdCWB1Yqtg26g4irojpc=
 github.com/mailru/easyjson v0.7.0/go.mod h1:KAzv3t3aY1NaHWoQz1+4F1ccyAH66Jk7yos7ldAVICs=
 github.com/mailru/easyjson v0.7.6/go.mod h1:xzfreul335JAWq5oZzymOObrkdz5UnU4kGfJJLY9Nlc=
-github.com/mamadeusia/go-micro/v4 v4.0.0-20230501123519-6f4e278a9ecb h1:lHEXFh/k1L/qlwW/ZmjVWXivZbjSqEJ1EY/kVWmyXvc=
-github.com/mamadeusia/go-micro/v4 v4.0.0-20230501123519-6f4e278a9ecb/go.mod h1:RV2AolXjTAil9Xm82QCMo1gknuZwD61oMUH14wJpECk=
 github.com/marstr/guid v1.1.0/go.mod h1:74gB1z2wpxxInTG6yaqA7KrtM0NZ+RbrcqDvYHefzho=
 github.com/matryer/is v1.2.0/go.mod h1:2fLPjFQM9rhQ15aVEtbuwhJinnOqrmgXPNdZsdwlWXA=
 github.com/matryer/moq v0.0.0-20190312154309-6cfb0558e1bd/go.mod h1:9ELz6aaclSIGnZBoaSLZ3NAl1VTufbOrXBPvtcy6WiQ=
@@ -1607,6 +1605,8 @@ github.com/zeebo/assert v1.3.0/go.mod h1:Pq9JiuJQpG8JLJdtkwrJESF0Foym2/D9XMU5ciN
 github.com/zeebo/xxh3 v1.0.2/go.mod h1:5NWz9Sef7zIDm2JHfFlcQvNekmcEl9ekUZQQKCYaDcA=
 go-micro.dev/v4 v4.8.0/go.mod h1:Ju8HrZ5hQSF+QguZ2QUs9Kbe42MHP1tJa/fpP5g07Cs=
 go-micro.dev/v4 v4.9.0/go.mod h1:Ju8HrZ5hQSF+QguZ2QUs9Kbe42MHP1tJa/fpP5g07Cs=
+go-micro.dev/v4 v4.10.3-0.20230506193924-80203030175f h1:FQ69zgtnSUkuWPARbnXNRxuXNpJGCTxtmAV4/0wQuKo=
+go-micro.dev/v4 v4.10.3-0.20230506193924-80203030175f/go.mod h1:RV2AolXjTAil9Xm82QCMo1gknuZwD61oMUH14wJpECk=
 go.etcd.io/bbolt v1.3.2/go.mod h1:IbVyRI1SCnLcuJnV2u8VeU0CEYM7e686BmAb1XKL+uU=
 go.etcd.io/bbolt v1.3.3/go.mod h1:IbVyRI1SCnLcuJnV2u8VeU0CEYM7e686BmAb1XKL+uU=
 go.etcd.io/bbolt v1.3.5/go.mod h1:G5EMThwa9y8QZGBClrRx5EY+Yw9kAhnjy3bSjsnlVTQ=

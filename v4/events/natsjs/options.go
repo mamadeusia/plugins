@@ -5,18 +5,22 @@ import (
 	"crypto/tls"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"go-micro.dev/v4/events"
 	"go-micro.dev/v4/logger"
 )
 
+type StreamName string
+
 // Options which are used to configure the nats stream.
 type Options struct {
-	ClusterID  string
-	ClientID   string
-	Address    string
-	NkeyConfig string
-	TLSConfig  *tls.Config
-	Logger     logger.Logger
+	ClusterID       string
+	ClientID        string
+	Address         string
+	NkeyConfig      string
+	TLSConfig       *tls.Config
+	Logger          logger.Logger
+	RetentionPolicy map[StreamName]nats.RetentionPolicy
 }
 
 // Option is a function which configures options.
@@ -53,6 +57,17 @@ func WithReadAckWait(ackWait time.Duration) events.ReadOption {
 			o.Context = context.Background()
 		}
 		o.Context = context.WithValue(o.Context, ackWaitReadOptionsContextKey{}, ackWait)
+	}
+}
+
+// retentionPolicy configures the retention policy like limit base - workqueue - interest .
+// default configuration is workqueue
+func WithStreamRetentionPolicy(streamName string, retentionPolicy nats.RetentionPolicy) Option {
+	return func(o *Options) {
+		if o.RetentionPolicy == nil {
+			o.RetentionPolicy = make(map[StreamName]nats.RetentionPolicy)
+		}
+		o.RetentionPolicy[StreamName(streamName)] = retentionPolicy
 	}
 }
 

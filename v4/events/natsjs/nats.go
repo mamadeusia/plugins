@@ -429,7 +429,7 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 		}
 
 		streamName := splits[0]
-		streamSubject := strings.Replace(topic, streamName+".", "", 1)
+		streamSubject = strings.Replace(topic, streamName+".", "", 1)
 
 		streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
 		if err != nil {

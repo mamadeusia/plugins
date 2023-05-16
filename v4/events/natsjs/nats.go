@@ -331,7 +331,7 @@ func (s *stream) Consume(topic string, opts ...events.ConsumeOption) (<-chan eve
 	}
 
 	if options.AutoAck {
-		subOpts = append(subOpts, nats.AckNone())
+		subOpts = append(subOpts, nats.AckAll())
 	} else {
 		subOpts = append(subOpts, nats.AckExplicit())
 	}
@@ -394,7 +394,6 @@ func IsUpper(s string) bool {
 	}
 	return true
 }
-
 func stringContains(s []string, e string) bool {
 	for _, r := range s {
 		if r == e {
@@ -421,6 +420,7 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 	defer cancel()
 
 	splits := strings.Split(topic, ".")
+	var streamName string
 	var streamSubject string
 
 	if len(splits) >= 2 {
@@ -428,11 +428,15 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 			return nil, fmt.Errorf("name must be uppercase")
 		}
 
-		streamName := splits[0]
+		streamName = splits[0]
 		streamSubject = strings.Replace(topic, streamName+".", "", 1)
 
 		streamInfo, err := s.natsJetStreamCtx.StreamInfo(streamName)
 		if err != nil {
+			s.opts.StreamConfiguration[StreamName(streamName)] = &StreamConfiguration{
+				RetentionPolicy: nats.WorkQueuePolicy,
+				Replicas:        1,
+			}
 			cfg := &nats.StreamConfig{
 				Name:      streamName,
 				Subjects:  []string{streamSubject},
@@ -457,8 +461,13 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 		}
 	} else {
 		// ensure that a stream exists for that topic
+		streamName = topic
 		_, err := s.natsJetStreamCtx.StreamInfo(topic)
 		if err != nil {
+			s.opts.StreamConfiguration[StreamName(topic)] = &StreamConfiguration{
+				RetentionPolicy: nats.WorkQueuePolicy,
+				Replicas:        1,
+			}
 			cfg := &nats.StreamConfig{
 				Name:      topic,
 				Retention: nats.WorkQueuePolicy, // default retention
@@ -477,22 +486,13 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 	subOpts := []nats.SubOpt{}
 
 	autoAck, ok := options.Context.Value(autoAckReadOptionsContextKey{}).(bool)
-	if ok {
-		if autoAck {
-			subOpts = append(subOpts, nats.AckNone())
-		} else {
-			subOpts = append(subOpts, nats.AckExplicit())
-
-		}
-	} else {
-		subOpts = append(subOpts, nats.AckNone())
+	if !ok {
+		autoAck = true
 	}
-
 	ackWait, ok := options.Context.Value(ackWaitReadOptionsContextKey{}).(time.Duration)
 	if ok {
 		if ackWait > 0 {
 			subOpts = append(subOpts, nats.AckWait(ackWait))
-
 		}
 
 	}
@@ -529,13 +529,11 @@ func (s *store) Read(topic string, opts ...events.ReadOption) ([]*events.Event, 
 			}
 			s.topicSubs[topic] = sub
 		}
-
 	}
 
 	msgs, err := s.topicSubs[topic].Fetch(int(options.Limit), nats.MaxWait(3*time.Second))
 
 	if err != nil {
-		log.Logf(logger.ErrorLevel, "Error fetching messages: %v", err)
 		return nil, err
 	}
 	var evts []*events.Event

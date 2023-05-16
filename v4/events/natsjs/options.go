@@ -12,15 +12,20 @@ import (
 
 type StreamName string
 
+type StreamConfiguration struct {
+	RetentionPolicy nats.RetentionPolicy
+	Replicas        int
+}
+
 // Options which are used to configure the nats stream.
 type Options struct {
-	ClusterID       string
-	ClientID        string
-	Address         string
-	NkeyConfig      string
-	TLSConfig       *tls.Config
-	Logger          logger.Logger
-	RetentionPolicy map[StreamName]nats.RetentionPolicy
+	ClusterID           string
+	ClientID            string
+	Address             string
+	NkeyConfig          string
+	TLSConfig           *tls.Config
+	Logger              logger.Logger
+	StreamConfiguration map[StreamName]*StreamConfiguration
 }
 
 // Option is a function which configures options.
@@ -64,10 +69,40 @@ func WithReadAckWait(ackWait time.Duration) events.ReadOption {
 // default configuration is workqueue
 func WithStreamRetentionPolicy(streamName string, retentionPolicy nats.RetentionPolicy) Option {
 	return func(o *Options) {
-		if o.RetentionPolicy == nil {
-			o.RetentionPolicy = make(map[StreamName]nats.RetentionPolicy)
+		if o.StreamConfiguration == nil {
+			o.StreamConfiguration = make(map[StreamName]*StreamConfiguration)
 		}
-		o.RetentionPolicy[StreamName(streamName)] = retentionPolicy
+		if o.StreamConfiguration[StreamName(streamName)] == nil {
+			o.StreamConfiguration[StreamName(streamName)] = &StreamConfiguration{
+				RetentionPolicy: retentionPolicy,
+				Replicas:        1,
+			}
+			return
+		} else {
+			o.StreamConfiguration[StreamName(streamName)].RetentionPolicy = retentionPolicy
+			return
+		}
+
+	}
+}
+
+// retentionPolicy configures the retention policy like limit base - workqueue - interest .
+// default configuration is workqueue
+func WithStreamReplicas(streamName string, replicas int) Option {
+	return func(o *Options) {
+		if o.StreamConfiguration == nil {
+			o.StreamConfiguration = make(map[StreamName]*StreamConfiguration)
+		}
+		if o.StreamConfiguration[StreamName(streamName)] == nil {
+			o.StreamConfiguration[StreamName(streamName)] = &StreamConfiguration{
+				RetentionPolicy: nats.WorkQueuePolicy,
+				Replicas:        replicas,
+			}
+			return
+		} else {
+			o.StreamConfiguration[StreamName(streamName)].Replicas = replicas
+			return
+		}
 	}
 }
 

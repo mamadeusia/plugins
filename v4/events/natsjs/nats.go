@@ -98,13 +98,14 @@ func connectToNatsJetStream(options Options) (nats.JetStreamContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error while obtaining JetStream context: %v", err)
 	}
-	for streamName, policy := range options.RetentionPolicy {
+	for streamName, conf := range options.StreamConfiguration {
 		_, err := js.StreamInfo(string(streamName))
 		if err != nil {
 			cfg := &nats.StreamConfig{
 				Name: string(streamName),
 				// Subjects:  []string{},
-				Retention: policy,
+				Retention: conf.RetentionPolicy,
+				Replicas:  conf.Replicas,
 			}
 
 			_, err := js.AddStream(cfg)
